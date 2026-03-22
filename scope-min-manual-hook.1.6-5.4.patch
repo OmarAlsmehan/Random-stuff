@@ -4,65 +4,104 @@ Date: Wed, 11 Feb 2026 15:50:30 +0300
 Subject: [PATCH] add scope min manual hook 1.6
 
 ---
- drivers/input/input.c | 12 ++++++++++++
- fs/exec.c             |  9 ++++++++-
+ drivers/input/input.c | 10 ++++++++++++
+ fs/devpts/inode.c     |  9 +++++++++
+ fs/exec.c             |  15 ++++++++
  fs/open.c             |  9 +++++++++
  fs/read_write.c       | 10 ++++++++++
  fs/stat.c             | 10 ++++++++++
  kernel/reboot.c       |  9 +++++++++
- 6 files changed, 58 insertions(+), 1 deletion(-)
+ 7 files changed, 72 insertions(+)
 
 diff --git a/drivers/input/input.c b/drivers/input/input.c
-index 583335bf688f..08c59981e1a2 100644
+index 583335bf6..bcc9c71d2 100644
 --- a/drivers/input/input.c
 +++ b/drivers/input/input.c
-@@ -441,11 +441,23 @@ static void input_handle_event(struct input_dev *dev,
-  * to 'seed' initial state of a switch or initial position of absolute
-  * axis, etc.
-  */
-+
+@@ -375,11 +375,21 @@ static int input_get_disposition(struct input_dev *dev,
+ 	return disposition;
+ }
+ 
 +#ifdef CONFIG_KSU
 +extern bool ksu_input_hook __read_mostly;
-+extern __attribute__((cold)) int ksu_handle_input_handle_event(
-+			unsigned int *type, unsigned int *code, int *value);
++extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
 +#endif
 +
- void input_event(struct input_dev *dev,
- 		 unsigned int type, unsigned int code, int value)
+ static void input_handle_event(struct input_dev *dev,
+ 			       unsigned int type, unsigned int code, int value)
  {
- 	unsigned long flags;
+ 	int disposition = input_get_disposition(dev, type, code, &value);
  
 +#ifdef CONFIG_KSU
 +	if (unlikely(ksu_input_hook))
 +		ksu_handle_input_handle_event(&type, &code, &value);
 +#endif
 +
- 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
+ 	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
+ 		add_input_randomness(type, code, value);
+diff --git a/fs/devpts/inode.c b/fs/devpts/inode.c
+index 4f25015aa..f030f1999 100644
+--- a/fs/devpts/inode.c
++++ b/fs/devpts/inode.c
+@@ -596,6 +596,10 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
+ 	return dentry;
+ }
  
- 		spin_lock_irqsave(&dev->event_lock, flags);
++#ifdef CONFIG_KSU
++extern int ksu_handle_devpts(struct inode*);
++#endif
++
+ /**
+  * devpts_get_priv -- get private data for a slave
+  * @pts_inode: inode of the slave
+@@ -604,6 +608,11 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
+  */
+ void *devpts_get_priv(struct dentry *dentry)
+ {
++
++#ifdef CONFIG_KSU
++    ksu_handle_devpts(dentry->d_inode);
++#endif
++
+ 	if (dentry->d_sb->s_magic != DEVPTS_SUPER_MAGIC)
+ 		return NULL;
+ 	return dentry->d_fsdata;
 diff --git a/fs/exec.c b/fs/exec.c
-index 910b407d267e..92a6fe6a44e3 100644
+index 910b407d2..2527b7591 100644
 --- a/fs/exec.c
 +++ b/fs/exec.c
-@@ -1919,13 +1919,20 @@ int do_execve_file(struct file *file, void *__argv, void *__envp)
- 
+@@ -1920,6 +1920,12 @@ int do_execve_file(struct file *file, void *__argv, void *__envp)
  	return __do_execve_file(AT_FDCWD, NULL, argv, envp, 0, file);
  }
--
+ 
 +#ifdef CONFIG_KSU
 +__attribute__((hot))
 +extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 +				void *argv, void *envp, int *flags);
 +#endif
++
  int do_execve(struct filename *filename,
  	const char __user *const __user *__argv,
  	const char __user *const __user *__envp)
- {
+@@ -1937,6 +1943,10 @@ int do_execveat(int fd, struct filename *filename,
  	struct user_arg_ptr argv = { .ptr.native = __argv };
  	struct user_arg_ptr envp = { .ptr.native = __envp };
+ 
 +#ifdef CONFIG_KSU
 +	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
-+#endif	
++#endif
++
+ 	return do_execveat_common(fd, filename, argv, envp, flags);
+ }
+ 
+@@ -1953,6 +1963,11 @@ static int compat_do_execve(struct filename *filename,
+ 		.is_compat = true,
+ 		.ptr.compat = __envp,
+ 	};
++
++#ifdef CONFIG_KSU // 32-bit ksud and 32-on-64 support
++	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
++#endif
++
  	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
  }
  
